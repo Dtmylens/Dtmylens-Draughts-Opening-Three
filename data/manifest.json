@@ -1,6 +1,6 @@
 {
-  "version": 3,
-  "created": "2026-05-18T23:51:47.425Z",
+  "version": 2,
+  "created": "2026-05-18T22:01:27.734Z",
   "gameCount": 62521,
   "maxDepth": 60,
   "bookFiles": [
@@ -9,11 +9,9 @@
     "book-002.bin",
     "book-003.bin",
     "book-004.bin",
-    "book-005.bin",
-    "book-006.bin",
-    "book-007.bin"
+    "book-005.bin"
   ],
-  "bookTotalSize": 196570456,
+  "bookTotalSize": 130751400,
   "metaFiles": [
     "meta-000.bin"
   ],
@@ -51,15 +49,7 @@
     },
     {
       "name": "book-005.bin",
-      "size": 25165824
-    },
-    {
-      "name": "book-006.bin",
-      "size": 25165824
-    },
-    {
-      "name": "book-007.bin",
-      "size": 20409688
+      "size": 4922280
     },
     {
       "name": "meta-000.bin",
