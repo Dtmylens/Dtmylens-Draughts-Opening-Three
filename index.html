@@ -705,7 +705,7 @@ async function decodeBook(buf) {
       setLoadInfo('Decoding nodes: ' + chunkEnd.toLocaleString() + ' / ' + nodeCount.toLocaleString());
       setLoadBar(0.7 + (chunkEnd / nodeCount) * 0.1);
     }
-    await sleep(0);
+    await sleep(5);
   }
   
   for (let chunkStart = 0; chunkStart < nodeCount; chunkStart += DECODE_CHUNK) {
@@ -723,7 +723,7 @@ async function decodeBook(buf) {
       setLoadInfo('Linking nodes: ' + chunkEnd.toLocaleString() + ' / ' + nodeCount.toLocaleString());
       setLoadBar(0.8 + (chunkEnd / nodeCount) * 0.05);
     }
-    await sleep(0);
+    await sleep(5);
   }
   
   const root = nodes[0];
@@ -755,7 +755,7 @@ async function decodeBook(buf) {
       bfsCount++;
       if (bfsCount % 10000 === 0) {
         if (typeof setLoadInfo === 'function') setLoadInfo('BFS: ' + bfsCount.toLocaleString() + ' / ' + nodeCount.toLocaleString());
-        await sleep(0);
+        await sleep(5);
       }
     }
   }
@@ -966,7 +966,15 @@ function findAllCaptures(position,startF,pc,enemy){
   return results;
 }
 
-function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+function sleep(ms) {
+  return new Promise(r => {
+    if (typeof requestIdleCallback !== 'undefined') {
+      requestIdleCallback(r, {timeout: ms + 100});
+    } else {
+      setTimeout(r, ms);
+    }
+  });
+}
 </script>
 <script>
 // ============== BOARD RENDERING ==============
@@ -1644,7 +1652,147 @@ function doExport(color){if(color==='all'){doExport('w');setTimeout(()=>doExport
 pos=startPos();buildPosCache([]);initBoardHTML();initDrag();initWheel();initVirtualScroll();drawBoard();
 
 // Try auto-load on start
-autoLoadDatabase();
+async function autoLoadDatabase() {
+  try {
+    setLoadInfo('Fetching manifest...');
+    setLoadBar(0.02);
+    
+    let manifestData;
+    try {
+      const mfBuf = await fetchWithProgress(dataBaseUrl + 'manifest.json');
+      manifestData = JSON.parse(new TextDecoder().decode(mfBuf));
+    } catch(e) {
+      throw new Error('manifest.json not found in /data/ folder');
+    }
+
+    const ver = manifestData.version || 1;
+    setLoadSubtitle('Database: ' + 
+      manifestData.gameCount.toLocaleString() + 
+      ' games, depth ' + manifestData.maxDepth + 
+      ' (v' + ver + ')');
+
+    // META
+    setLoadInfo('Loading meta...');
+    setLoadBar(0.05);
+    let metaJsonStr = '';
+    if (manifestData.metaFiles && manifestData.metaFiles.length) {
+      const metaPromises = manifestData.metaFiles.map(fname =>
+        fetchWithProgress(dataBaseUrl + fname)
+      );
+      const metaBufs = await Promise.all(metaPromises);
+      const metaChunks = metaBufs.map(b => new Uint8Array(b));
+      const totalLen = metaChunks.reduce((s,c) => s+c.length, 0);
+      const combined = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const c of metaChunks) { combined.set(c, pos); pos += c.length; }
+      metaJsonStr = new TextDecoder().decode(combined);
+    } else {
+      const metaBuf = await fetchWithProgress(dataBaseUrl + 'meta.json');
+      metaJsonStr = new TextDecoder().decode(metaBuf);
+    }
+    preloadedMeta = JSON.parse(metaJsonStr);
+    metaJsonStr = '';
+    setLoadBar(0.2);
+
+    // BOOK
+    setLoadInfo('Loading book...');
+    let bookBuf;
+    if (manifestData.bookFiles && manifestData.bookFiles.length) {
+      const bookPromises = manifestData.bookFiles.map(fname =>
+        fetchWithProgress(dataBaseUrl + fname)
+      );
+      const bookBufs = await Promise.all(bookPromises);
+      const bookChunks = bookBufs.map(b => new Uint8Array(b));
+      setLoadBar(0.7);
+      const totalLen = bookChunks.reduce((s,c) => s+c.length, 0);
+      const combined = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const c of bookChunks) { combined.set(c, pos); pos += c.length; }
+      bookBuf = combined.buffer;
+    } else {
+      bookBuf = await fetchWithProgress(dataBaseUrl + 'book.bin');
+    }
+    setLoadBar(0.7);
+
+    // DECODE W WORKER
+    setLoadInfo('Decoding book (Worker)...');
+    preloadedTree = await decodeBookInWorker(bookBuf);
+    setLoadBar(0.95);
+
+    setLoadInfo('Building game list...');
+    allGames = new Array(preloadedMeta.gameCount);
+    for (let i = 0; i < preloadedMeta.gameCount; i++) 
+      allGames[i] = { id: i, _lazy: true };
+
+    setLoadBar(1);
+    setLoadInfo('Ready! ' + 
+      preloadedMeta.gameCount.toLocaleString() + ' games loaded');
+
+    tree.w = preloadedTree.root;
+    tree.b = preloadedTree.root;
+    treeRegistry.w = preloadedTree.registry;
+    treeRegistry.b = preloadedTree.registry;
+    bookLoaded = true;
+    autoLoaded = true;
+    mode = 'all';
+
+    document.getElementById('status').textContent =
+      preloadedMeta.gameCount.toLocaleString() + ' games (auto)';
+    document.getElementById('status').className = 'badge badge-all';
+
+    pos = startPos(); buildPosCache([]);
+    setPersp('white');
+    renderTree(); drawBoard(); updAll();
+    showSMA(preloadedMeta.gameCount);
+    hideLoadOverlay();
+
+  } catch(e) {
+    console.error(e);
+    setLoadInfo('Error');
+    loadErr(e.message);
+  }
+}
+
+// ===== WEB WORKER DO DEKODOWANIA =====
+function decodeBookInWorker(bookBuf) {
+  return new Promise((resolve, reject) => {
+    const workerCode = `
+${posBytesToKeyFn.toString()}
+${decodeBookWorkerFn.toString()}
+
+self.onmessage = async function(e) {
+  try {
+    const result = await decodeBookWorkerFn(e.data);
+    self.postMessage({type:'done', result}, []);
+  } catch(err) {
+    self.postMessage({type:'error', message: err.message});
+  }
+};
+`;
+    const blob = new Blob([workerCode], {type: 'application/javascript'});
+    const url = URL.createObjectURL(blob);
+    const worker = new Worker(url);
+    
+    worker.onmessage = (e) => {
+      URL.revokeObjectURL(url);
+      worker.terminate();
+      if (e.data.type === 'error') {
+        reject(new Error(e.data.message));
+      } else {
+        // Rebuild Map and object references from worker data
+        const {nodes, edges, nodeCount} = e.data.result;
+        resolve(rebuildTree(nodes, edges, nodeCount));
+      }
+    };
+    worker.onerror = (e) => {
+      URL.revokeObjectURL(url);
+      worker.terminate();
+      reject(new Error(e.message));
+    };
+    
+    worker.postMessage(bookBuf, [bookBuf]);
+  });
+}
 </script>
 </body>
 </html>
